@@ -1,0 +1,12 @@
+{
+  "name": "realtime-proxy-server",
+  "version": "1.0.0",
+  "description": "WebSocket proxy for MiniMax Realtime API",
+  "main": "proxy.js",
+  "scripts": {
+    "start": "node proxy.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
