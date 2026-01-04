@@ -4,8 +4,8 @@ import { RealtimeService } from './services/realtimeService';
 import { AudioProcessor } from './services/audioProcessor';
 import './App.css';
 
-// 系统提示词 - 英语学习助手
-const SYSTEM_PROMPT = `你是一位友善、专业的英语学习辅助助手，致力于帮助用户提升英语表达能力。你的核心职责包括：
+// 默认系统提示词
+const DEFAULT_SYSTEM_PROMPT = `你是一位友善、专业的英语学习辅助助手，致力于帮助用户提升英语表达能力。你的核心职责包括：
 
 【评测维度】
 针对用户的每一轮英语对话内容，请从以下三个维度进行评估：
@@ -36,11 +36,18 @@ const App: React.FC = () => {
   // ==================== 状态 ====================
   const [messages, setMessages] = useState<Message[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
-  const [isRecording, setIsRecording] = useState(false);
+  const [isConversationMode, setIsConversationMode] = useState(false);  // 持续对话模式
+  const [isListening, setIsListening] = useState(false);  // 正在监听用户说话
   const [isResponding, setIsResponding] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [selectedVoice, setSelectedVoice] = useState('male-qn-qingse');
+  const [volume, setVolume] = useState(0);  // 麦克风音量
+
+  // 配置状态
+  const [apiKey, setApiKey] = useState(process.env.REACT_APP_API_KEY || '');
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
+  const [showSettings, setShowSettings] = useState(false);  // 设置面板显示
 
   // ==================== Refs ====================
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -48,6 +55,8 @@ const App: React.FC = () => {
   const audioProcessorRef = useRef<AudioProcessor | null>(null);
   const streamingTextRef = useRef('');
   const isInterruptedRef = useRef(false);  // 打断标志，用于忽略后续音频数据
+  const isConversationModeRef = useRef(false);  // 对话模式 ref（用于回调中访问最新状态）
+  const hasSpeechRef = useRef(false);  // 本轮是否有说话
 
   // ==================== 辅助函数 ====================
   const addMessage = useCallback((role: 'user' | 'assistant', content: string, isAudio = false) => {
@@ -65,28 +74,119 @@ const App: React.FC = () => {
     setError(null);
   }, []);
 
-  // ==================== 初始化 ====================
-  useEffect(() => {
-    const apiKey = process.env.REACT_APP_API_KEY || '';
-    const defaultVoice = process.env.REACT_APP_DEFAULT_VOICE || 'male-qn-qingse';
+  // 启动麦克风监听
+  const startListening = useCallback(async () => {
+    if (!audioProcessorRef.current || !realtimeRef.current?.isConnectedState()) return;
 
-    if (!apiKey) {
-      setError('请在 .env 文件中配置 REACT_APP_API_KEY');
-      return;
+    try {
+      hasSpeechRef.current = false;
+      audioProcessorRef.current.resetVADState();
+      await audioProcessorRef.current.startCapture((base64) => {
+        realtimeRef.current?.appendAudio(base64);
+      });
+      setIsListening(true);
+      console.log('👂 开始监听...');
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }, []);
+
+  // 用于在回调中调用最新版本的 startListening
+  const startListeningRef = useRef(startListening);
+  startListeningRef.current = startListening;
+
+  // 停止麦克风监听
+  const stopListening = useCallback(() => {
+    if (!audioProcessorRef.current) return;
+    audioProcessorRef.current.stopCapture();
+    setIsListening(false);
+    setVolume(0);
+    console.log('🔇 停止监听');
+  }, []);
+
+  // 处理用户说话结束（VAD 检测到静音）- 使用 ref 存储
+  const handleSpeechEndRef = useRef(() => {});
+  handleSpeechEndRef.current = () => {
+    if (!isConversationModeRef.current || !hasSpeechRef.current) return;
+
+    // 如果 AI 正在说话，不处理静音结束（等待用户继续说话或打断完成）
+    if (isRespondingRef.current) return;
+
+    console.log('📤 静音超时，提交音频并触发响应');
+    // 不停止监听！保持麦克风开启以便检测打断
+    // stopListening();
+
+    // 重置说话状态，准备下一轮
+    hasSpeechRef.current = false;
+    audioProcessorRef.current?.resetVADState();
+
+    // 提交音频并触发响应
+    realtimeRef.current?.commitAudio();
+    realtimeRef.current?.createResponse();
+  };
+
+  // 处理用户开始说话（VAD 检测到声音）- 使用 ref 存储
+  const isRespondingRef = useRef(false);
+  isRespondingRef.current = isResponding;
+  const isListeningRef = useRef(false);
+  isListeningRef.current = isListening;
+
+  const handleSpeechStartRef = useRef(() => {});
+  handleSpeechStartRef.current = () => {
+    hasSpeechRef.current = true;
+
+    // 如果 AI 正在说话，自动打断
+    if (isRespondingRef.current) {
+      console.log('🛑 用户开始说话，自动打断 AI');
+      isInterruptedRef.current = true;
+      audioProcessorRef.current?.stopPlayback();
+      realtimeRef.current?.interrupt();
+      // 清空之前的音频缓冲区，重新开始
+      realtimeRef.current?.clearAudioBuffer();
+      setIsResponding(false);
+      setStreamingText('');
+      streamingTextRef.current = '';
+      // 重置 hasSpeech，让新的语音输入重新开始计算
+      hasSpeechRef.current = true;
+    }
+  };
+
+  // ==================== 初始化服务 ====================
+  const initializeService = useCallback((key: string, prompt: string, voice: string) => {
+    // 清理旧服务
+    if (realtimeRef.current) {
+      realtimeRef.current.disconnect();
+    }
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.destroy();
     }
 
-    setSelectedVoice(defaultVoice);
-
-    // 初始化服务
+    // 初始化新服务
     realtimeRef.current = new RealtimeService({
-      apiKey,
-      voice: defaultVoice,
-      instructions: SYSTEM_PROMPT,
+      apiKey: key,
+      voice: voice,
+      instructions: prompt,
     });
 
     audioProcessorRef.current = new AudioProcessor();
 
-    // 设置回调
+    // 设置 VAD 回调
+    audioProcessorRef.current.setVADCallbacks({
+      onSpeechStart: () => handleSpeechStartRef.current(),
+      onSpeechEnd: () => handleSpeechEndRef.current(),
+      onVolumeChange: (vol) => setVolume(vol),
+    });
+
+    // 设置 Realtime 回调
+    setupRealtimeCallbacks();
+
+    console.log('✅ 服务已初始化');
+  }, []);
+
+  // 设置 Realtime 回调
+  const setupRealtimeCallbacks = useCallback(() => {
+    if (!realtimeRef.current) return;
+
     realtimeRef.current.setCallbacks({
       onConnected: () => {
         setConnectionStatus('connected');
@@ -96,18 +196,18 @@ const App: React.FC = () => {
 
       onDisconnected: () => {
         setConnectionStatus('disconnected');
-        setIsRecording(false);
+        isConversationModeRef.current = false;
+        setIsConversationMode(false);
+        setIsListening(false);
         setIsResponding(false);
       },
 
       onUserTranscript: (transcript) => {
-        // 用户语音识别完成
         console.log('🎤 用户语音:', transcript);
         addMessage('user', transcript, true);
       },
 
       onResponseStart: () => {
-        // 新响应开始，重置打断标志
         isInterruptedRef.current = false;
         setIsResponding(true);
         setStreamingText('');
@@ -115,7 +215,6 @@ const App: React.FC = () => {
       },
 
       onTextDelta: (delta) => {
-        // 如果已打断，忽略后续文本
         if (isInterruptedRef.current) return;
         setIsResponding(true);
         streamingTextRef.current += delta;
@@ -123,7 +222,6 @@ const App: React.FC = () => {
       },
 
       onTextDone: (text) => {
-        // 如果已打断，不添加消息
         if (isInterruptedRef.current) return;
         addMessage('assistant', text);
         setStreamingText('');
@@ -131,7 +229,6 @@ const App: React.FC = () => {
       },
 
       onAudioDelta: (audioBase64) => {
-        // 如果已打断，忽略后续音频
         if (isInterruptedRef.current) return;
         setIsResponding(true);
         audioProcessorRef.current?.playAudioChunk(audioBase64);
@@ -139,8 +236,6 @@ const App: React.FC = () => {
 
       onAudioDone: () => {
         console.log('🔊 AI 音频流接收完成');
-        // 音频流接收完成，但本地可能还在播放
-        // 延迟检查播放状态，等待播放队列清空
         const checkPlaybackDone = () => {
           if (!audioProcessorRef.current?.isCurrentlyPlaying()) {
             console.log('🔊 AI 音频播放完成');
@@ -148,8 +243,16 @@ const App: React.FC = () => {
               setIsResponding(false);
             }
             isInterruptedRef.current = false;
+
+            if (isConversationModeRef.current) {
+              console.log('🔄 AI 说完，继续监听...');
+              hasSpeechRef.current = false;
+              audioProcessorRef.current?.resetVADState();
+              if (!isListeningRef.current) {
+                startListeningRef.current();
+              }
+            }
           } else {
-            // 还在播放，继续检查
             setTimeout(checkPlaybackDone, 200);
           }
         };
@@ -157,8 +260,6 @@ const App: React.FC = () => {
       },
 
       onResponseDone: (usage) => {
-        // 响应数据发送完成，但不立即隐藏打断按钮
-        // 等待 onAudioDone 中的播放完成检查
         if (usage) {
           console.log('📊 Token 使用:', usage);
         }
@@ -169,12 +270,26 @@ const App: React.FC = () => {
         setIsResponding(false);
       },
     });
+  }, [addMessage]);
+
+  // 初始化 effect
+  useEffect(() => {
+    const defaultVoice = process.env.REACT_APP_DEFAULT_VOICE || 'male-qn-qingse';
+    setSelectedVoice(defaultVoice);
+
+    // 只初始化 AudioProcessor
+    audioProcessorRef.current = new AudioProcessor();
+    audioProcessorRef.current.setVADCallbacks({
+      onSpeechStart: () => handleSpeechStartRef.current(),
+      onSpeechEnd: () => handleSpeechEndRef.current(),
+      onVolumeChange: (vol) => setVolume(vol),
+    });
 
     return () => {
       realtimeRef.current?.disconnect();
       audioProcessorRef.current?.destroy();
     };
-  }, [addMessage]);
+  }, []);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -193,11 +308,26 @@ const App: React.FC = () => {
   const handleConnect = async () => {
     if (connectionStatus === 'connecting') return;
 
+    // 验证 API Key
+    if (!apiKey.trim()) {
+      setError('请输入 API Key');
+      setShowSettings(true);
+      return;
+    }
+
     setConnectionStatus('connecting');
     setError(null);
 
     try {
-      await realtimeRef.current?.connect();
+      // 初始化或重新初始化服务
+      realtimeRef.current = new RealtimeService({
+        apiKey: apiKey.trim(),
+        voice: selectedVoice,
+        instructions: systemPrompt,
+      });
+      setupRealtimeCallbacks();
+
+      await realtimeRef.current.connect();
     } catch (err: any) {
       setConnectionStatus('error');
       setError('连接失败: ' + err.message);
@@ -205,14 +335,18 @@ const App: React.FC = () => {
   };
 
   const handleDisconnect = () => {
+    // 退出对话模式
+    isConversationModeRef.current = false;
+    setIsConversationMode(false);
+    stopListening();
+
     realtimeRef.current?.disconnect();
     audioProcessorRef.current?.stopPlayback();
     setConnectionStatus('disconnected');
-    setIsRecording(false);
     setIsResponding(false);
   };
 
-  // ==================== 语音输入 ====================
+  // ==================== 语音输入（对话模式切换） ====================
   const handleVoiceInput = async () => {
     // 如果未连接，先连接
     if (!realtimeRef.current?.isConnectedState()) {
@@ -224,33 +358,48 @@ const App: React.FC = () => {
       }
     }
 
-    if (isRecording) {
-      // 停止录音
-      audioProcessorRef.current?.stopCapture();
-      setIsRecording(false);
+    if (isConversationMode) {
+      // 退出对话模式
+      console.log('🛑 退出对话模式');
+      isConversationModeRef.current = false;
+      setIsConversationMode(false);
 
-      // 提交音频并触发响应
-      realtimeRef.current?.commitAudio();
-      realtimeRef.current?.createResponse();
-    } else {
-      // 如果 AI 正在说话，打断它
+      // 停止监听
+      stopListening();
+
+      // 清空音频缓冲区（不提交，避免空数据错误）
+      realtimeRef.current?.clearAudioBuffer();
+
+      // 停止 AI 播放
       if (isResponding) {
+        isInterruptedRef.current = true;
         audioProcessorRef.current?.stopPlayback();
         realtimeRef.current?.interrupt();
         setIsResponding(false);
         setStreamingText('');
+        streamingTextRef.current = '';
+      }
+    } else {
+      // 进入对话模式
+      console.log('🎙️ 进入对话模式');
+
+      // 如果 AI 正在说话，打断它
+      if (isResponding) {
+        isInterruptedRef.current = true;
+        audioProcessorRef.current?.stopPlayback();
+        realtimeRef.current?.interrupt();
+        setIsResponding(false);
+        setStreamingText('');
+        streamingTextRef.current = '';
       }
 
-      // 开始录音
-      try {
-        await audioProcessorRef.current?.startCapture((base64) => {
-          realtimeRef.current?.appendAudio(base64);
-        });
-        setIsRecording(true);
-        setError(null);
-      } catch (err: any) {
-        setError(err.message);
-      }
+      // 设置对话模式
+      isConversationModeRef.current = true;
+      setIsConversationMode(true);
+
+      // 开始监听
+      await startListening();
+      setError(null);
     }
   };
 
@@ -295,6 +444,13 @@ const App: React.FC = () => {
           <span className="version-tag">Realtime API</span>
         </div>
         <div className="header-right">
+          <button
+            className="btn btn-settings"
+            onClick={() => setShowSettings(!showSettings)}
+            title="设置"
+          >
+            ⚙️
+          </button>
           <span className={`connection-status ${connectionStatus}`}>
             {connectionStatus === 'connected' && '● 已连接'}
             {connectionStatus === 'connecting' && '○ 连接中...'}
@@ -316,6 +472,54 @@ const App: React.FC = () => {
           )}
         </div>
       </header>
+
+      {/* 设置面板 */}
+      {showSettings && (
+        <div className="settings-panel">
+          <div className="settings-header">
+            <h3>设置</h3>
+            <button className="btn-close" onClick={() => setShowSettings(false)}>×</button>
+          </div>
+
+          <div className="settings-content">
+            <div className="setting-item">
+              <label>API Key</label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="输入 MiniMax API Key"
+                disabled={isConnected}
+              />
+              {!apiKey && <span className="setting-hint">必填，用于连接 MiniMax Realtime API</span>}
+            </div>
+
+            <div className="setting-item">
+              <label>人设提示词 (System Prompt)</label>
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                placeholder="输入 AI 助手的人设和行为指导..."
+                rows={8}
+                disabled={isConnected}
+              />
+              <span className="setting-hint">
+                {isConnected ? '断开连接后可修改' : '定义 AI 助手的角色、性格和行为方式'}
+              </span>
+            </div>
+
+            <div className="setting-actions">
+              <button
+                className="btn btn-reset"
+                onClick={() => setSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
+                disabled={isConnected}
+              >
+                恢复默认
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 聊天区域 */}
       <div className="chat-container">
@@ -411,7 +615,7 @@ const App: React.FC = () => {
         {/* 语音输入区域 */}
         <div className="input-container">
           <div className="action-buttons">
-            {isResponding && (
+            {isResponding && !isConversationMode && (
               <button type="button" className="btn btn-interrupt" onClick={handleInterrupt} title="打断">
                 ⏹️
               </button>
@@ -419,15 +623,16 @@ const App: React.FC = () => {
 
             <button
               type="button"
-              className={`btn btn-voice ${isRecording ? 'recording' : ''}`}
+              className={`btn btn-voice ${isConversationMode ? 'conversation-mode' : ''} ${isListening ? 'listening' : ''}`}
               onClick={handleVoiceInput}
               disabled={connectionStatus === 'connecting'}
-              title={isRecording ? '停止录音' : '开始语音输入'}
+              title={isConversationMode ? '结束对话' : '开始对话'}
+              style={isListening ? { boxShadow: `0 0 ${10 + volume * 30}px rgba(59, 130, 246, ${0.5 + volume * 0.5})` } : undefined}
             >
-              {isRecording ? '🔴' : '🎤'}
+              {isConversationMode ? (isListening ? '👂' : '💬') : '🎤'}
             </button>
 
-            {isResponding && (
+            {isResponding && !isConversationMode && (
               <div style={{ width: 56 }} /> /* 占位，保持按钮居中 */
             )}
           </div>
@@ -439,10 +644,16 @@ const App: React.FC = () => {
             <span className={`status-dot ${isConnected ? 'active' : ''}`}></span>
             <span>Realtime API</span>
           </div>
-          {isRecording && (
+          {isConversationMode && (
+            <div className="status-item conversation">
+              <span className="status-dot pulse"></span>
+              <span>对话模式</span>
+            </div>
+          )}
+          {isListening && (
             <div className="status-item recording">
               <span className="status-dot pulse"></span>
-              <span>录音中...</span>
+              <span>正在听...</span>
             </div>
           )}
           {isResponding && (

@@ -4,6 +4,12 @@
  * 支持 PCM16 24kHz 格式（MiniMax Realtime API 要求）
  */
 
+export interface VADCallbacks {
+  onSpeechStart?: () => void;      // 用户开始说话
+  onSpeechEnd?: () => void;        // 用户停止说话（静音超时）
+  onVolumeChange?: (volume: number) => void;  // 音量变化（0-1）
+}
+
 export class AudioProcessor {
   private audioContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
@@ -19,11 +25,27 @@ export class AudioProcessor {
   // 采集回调
   private onAudioData: ((base64: string) => void) | null = null;
 
+  // VAD 相关
+  private vadCallbacks: VADCallbacks = {};
+  private isSpeaking = false;           // 当前是否在说话
+  private silenceStartTime = 0;         // 静音开始时间
+  private readonly SILENCE_THRESHOLD = 0.01;  // 静音阈值
+  private readonly SILENCE_DURATION = 1500;   // 静音持续时间（毫秒）触发结束
+  private readonly SPEECH_THRESHOLD = 0.02;   // 说话阈值（比静音阈值略高，避免误触发）
+  private silenceTimer: NodeJS.Timeout | null = null;
+
   // 采样率（MiniMax 要求 24kHz）
   private readonly SAMPLE_RATE = 24000;
 
   constructor() {
     // 延迟初始化，需要用户交互后才能创建 AudioContext
+  }
+
+  /**
+   * 设置 VAD 回调
+   */
+  setVADCallbacks(callbacks: VADCallbacks): void {
+    this.vadCallbacks = callbacks;
   }
 
   // ==================== 音频采集 ====================
@@ -76,6 +98,9 @@ export class AudioProcessor {
           processedData = inputData;
         }
 
+        // VAD 检测
+        this.processVAD(processedData);
+
         // 转换为 Base64 PCM16
         const base64 = this.float32ToBase64PCM16(processedData);
         this.onAudioData?.(base64);
@@ -114,8 +139,89 @@ export class AudioProcessor {
       this.mediaStream = null;
     }
 
+    // 重置 VAD 状态
+    this.resetVADState();
+
     this.onAudioData = null;
     console.log('🎤 音频采集已停止');
+  }
+
+  // ==================== VAD 语音活动检测 ====================
+
+  /**
+   * 处理 VAD 检测
+   */
+  private processVAD(audioData: Float32Array): void {
+    // 计算 RMS 音量
+    let sum = 0;
+    for (let i = 0; i < audioData.length; i++) {
+      sum += audioData[i] * audioData[i];
+    }
+    const rms = Math.sqrt(sum / audioData.length);
+
+    // 通知音量变化
+    this.vadCallbacks.onVolumeChange?.(Math.min(rms * 10, 1));
+
+    const now = Date.now();
+
+    if (rms > this.SPEECH_THRESHOLD) {
+      // 检测到声音
+      if (!this.isSpeaking) {
+        // 开始说话
+        this.isSpeaking = true;
+        console.log('🗣️ 检测到说话开始');
+        this.vadCallbacks.onSpeechStart?.();
+      }
+      // 清除静音计时器
+      if (this.silenceTimer) {
+        clearTimeout(this.silenceTimer);
+        this.silenceTimer = null;
+      }
+      this.silenceStartTime = 0;
+    } else if (rms < this.SILENCE_THRESHOLD) {
+      // 静音
+      if (this.isSpeaking) {
+        // 正在说话中检测到静音
+        if (this.silenceStartTime === 0) {
+          this.silenceStartTime = now;
+        }
+
+        // 启动静音计时器（如果还没有）
+        if (!this.silenceTimer) {
+          this.silenceTimer = setTimeout(() => {
+            if (this.isSpeaking && this.silenceStartTime > 0) {
+              const silenceDuration = Date.now() - this.silenceStartTime;
+              if (silenceDuration >= this.SILENCE_DURATION) {
+                console.log('🤫 检测到说话结束（静音超时）');
+                this.isSpeaking = false;
+                this.silenceStartTime = 0;
+                this.vadCallbacks.onSpeechEnd?.();
+              }
+            }
+            this.silenceTimer = null;
+          }, this.SILENCE_DURATION);
+        }
+      }
+    }
+  }
+
+  /**
+   * 重置 VAD 状态
+   */
+  resetVADState(): void {
+    this.isSpeaking = false;
+    this.silenceStartTime = 0;
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+  }
+
+  /**
+   * 获取当前是否在说话
+   */
+  getIsSpeaking(): boolean {
+    return this.isSpeaking;
   }
 
   // ==================== 音频播放 ====================

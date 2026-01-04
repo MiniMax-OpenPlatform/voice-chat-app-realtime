@@ -4,11 +4,23 @@
 
 ## 特性
 
-- 🎤 **实时语音识别** - 使用 WebSocket 流式传输音频
-- 🤖 **智能对话** - 集成 MiniMax 大语言模型
-- 🔊 **流式语音合成** - 实时播放 AI 语音回复
-- ⚡ **低延迟** - 首字延迟 < 0.5 秒
-- 🔄 **语音打断** - 支持打断 AI 说话
+### 核心功能
+- **实时语音识别** - 使用 WebSocket 流式传输音频
+- **智能对话** - 集成 MiniMax 大语言模型
+- **流式语音合成** - 实时播放 AI 语音回复
+- **低延迟** - 首字延迟 < 0.5 秒
+
+### 持续对话模式
+- **一键开启** - 点击麦克风进入持续对话模式，无需反复点击
+- **语音活动检测 (VAD)** - 自动检测用户说话开始和结束
+- **静音自动提交** - 静音 1.5 秒后自动提交语音并触发 AI 响应
+- **语音打断** - AI 说话时可直接开口打断，实现自然对话
+- **无缝衔接** - AI 回复完成后自动继续监听，循环对话
+
+### 可视化配置
+- **API Key 输入** - 支持在界面直接输入 API Key，无需修改配置文件
+- **人设提示词编辑** - 可自定义 AI 助手的角色、性格和行为方式
+- **实时音量显示** - 麦克风按钮根据音量动态显示光晕效果
 
 ## 技术架构
 
@@ -20,6 +32,11 @@
 │  │   (采集)    │    │  (全双工)   │    │    (播放)        │  │
 │  │   PCM 24kHz │    │  Realtime   │    │                 │  │
 │  └─────────────┘    └─────────────┘    └─────────────────┘  │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌─────────────┐                                             │
+│  │     VAD     │ ─── 语音活动检测，自动判断说话开始/结束     │
+│  └─────────────┘                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -40,23 +57,7 @@
 npm install
 ```
 
-### 2. 配置环境变量
-
-复制 `.env.example` 为 `.env` 并填入 API Key：
-
-```bash
-cp .env.example .env
-```
-
-编辑 `.env` 文件：
-
-```
-REACT_APP_API_KEY=your_minimax_api_key_here
-REACT_APP_MODEL=abab6.5s-chat
-REACT_APP_DEFAULT_VOICE=male-qn-qingse
-```
-
-### 3. 启动服务
+### 2. 启动服务
 
 由于浏览器 WebSocket 无法设置自定义 Authorization header，需要先启动代理服务器：
 
@@ -80,6 +81,52 @@ npm run dev
 
 > 注意：代理服务器运行在 ws://localhost:8080
 
+### 3. 配置 API Key
+
+有两种方式配置 API Key：
+
+**方式一：界面配置（推荐）**
+1. 打开应用后点击右上角 ⚙️ 设置按钮
+2. 在设置面板中输入 API Key
+3. 可选：修改人设提示词自定义 AI 角色
+
+**方式二：环境变量配置**
+
+复制 `.env.example` 为 `.env` 并填入 API Key：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env` 文件：
+
+```
+REACT_APP_API_KEY=your_minimax_api_key_here
+REACT_APP_MODEL=abab6.5s-chat
+REACT_APP_DEFAULT_VOICE=male-qn-qingse
+```
+
+## 使用指南
+
+### 持续对话模式
+
+1. **开始对话** - 点击麦克风按钮（按钮变绿）
+2. **说话** - 直接说话，系统自动检测
+3. **等待回复** - 停止说话 1.5 秒后自动提交
+4. **打断 AI** - AI 说话时直接开口即可打断
+5. **继续对话** - AI 回复完毕后自动继续监听
+6. **结束对话** - 再次点击麦克风按钮退出
+
+### 设置面板
+
+点击右上角 ⚙️ 按钮打开设置面板：
+
+- **API Key** - 输入 MiniMax API Key（密码形式显示）
+- **人设提示词** - 自定义 AI 助手的角色和行为
+- **恢复默认** - 一键恢复默认的英语学习助手人设
+
+> 注意：连接状态下无法修改配置，需先断开连接
+
 ## 项目结构
 
 ```
@@ -90,7 +137,7 @@ src/
 ├── index.tsx                  # 入口文件
 └── services/
     ├── realtimeService.ts     # Realtime API 服务
-    └── audioProcessor.ts      # 音频采集和播放
+    └── audioProcessor.ts      # 音频采集、播放和 VAD
 
 server/
 ├── proxy.js                   # WebSocket 代理服务器
@@ -109,15 +156,27 @@ server/
 - `commitAudio()` - 提交音频触发识别
 - `createResponse()` - 触发 AI 响应
 - `interrupt()` - 打断当前响应
+- `clearAudioBuffer()` - 清空音频缓冲区
 
 ### AudioProcessor
 
-负责音频采集和播放：
+负责音频采集、播放和语音活动检测：
 
 - `startCapture(callback)` - 开始采集麦克风
 - `stopCapture()` - 停止采集
 - `playAudioChunk(base64)` - 播放音频块
 - `stopPlayback()` - 停止播放
+- `setVADCallbacks(callbacks)` - 设置 VAD 回调
+- `resetVADState()` - 重置 VAD 状态
+- `getIsSpeaking()` - 获取当前是否在说话
+
+### VAD (语音活动检测)
+
+AudioProcessor 内置 VAD 功能：
+
+- **onSpeechStart** - 检测到用户开始说话
+- **onSpeechEnd** - 检测到用户停止说话（静音超过 1.5 秒）
+- **onVolumeChange** - 实时音量变化回调
 
 ## 音频格式
 
@@ -134,6 +193,21 @@ server/
 | Edge 90+ | ✅ |
 | Safari 14+ | ✅ |
 | Firefox | ⚠️ 部分支持 |
+
+## 更新日志
+
+### v1.1.0
+- 新增持续对话模式，一键开启无需反复点击
+- 新增 VAD 语音活动检测，自动判断说话开始/结束
+- 新增语音打断功能，AI 说话时可直接开口打断
+- 新增设置面板，支持界面配置 API Key 和人设提示词
+- 新增实时音量可视化效果
+- 优化对话流程，AI 回复后自动继续监听
+
+### v1.0.0
+- 初始版本
+- 基于 MiniMax Realtime API 的实时语音对话
+- 支持流式语音识别和合成
 
 ## License
 

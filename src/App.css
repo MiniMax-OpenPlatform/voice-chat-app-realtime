@@ -508,6 +508,31 @@ body {
     0 0 0 6px rgba(220, 53, 69, 0.3);
 }
 
+/* 对话模式按钮 */
+.btn-voice.conversation-mode {
+  background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+  box-shadow:
+    0 8px 30px rgba(40, 167, 69, 0.5),
+    0 0 0 6px rgba(40, 167, 69, 0.2);
+}
+
+.btn-voice.conversation-mode.listening {
+  animation: listeningPulse 2s infinite;
+}
+
+@keyframes listeningPulse {
+  0%, 100% {
+    box-shadow:
+      0 8px 30px rgba(59, 130, 246, 0.5),
+      0 0 0 6px rgba(59, 130, 246, 0.3);
+  }
+  50% {
+    box-shadow:
+      0 8px 40px rgba(59, 130, 246, 0.7),
+      0 0 0 12px rgba(59, 130, 246, 0.2);
+  }
+}
+
 @keyframes recordingPulse {
   0%, 100% {
     box-shadow:
@@ -580,6 +605,160 @@ body {
 .status-item.recording {
   color: #ff6b7a;
   font-weight: 500;
+}
+
+.status-item.conversation {
+  color: #20c997;
+  font-weight: 500;
+}
+
+.status-item.conversation .status-dot.pulse {
+  background: #20c997;
+}
+
+/* ==================== 设置按钮 ==================== */
+.btn-settings {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.8);
+  padding: 8px 12px;
+  font-size: 16px;
+}
+
+.btn-settings:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* ==================== 设置面板 ==================== */
+.settings-panel {
+  position: absolute;
+  top: 60px;
+  left: 0;
+  right: 0;
+  background: linear-gradient(180deg, #1e1e3f 0%, #16213e 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  z-index: 100;
+  max-height: 70vh;
+  overflow-y: auto;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.settings-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.btn-close {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.btn-close:hover {
+  color: #ffffff;
+}
+
+.settings-content {
+  padding: 20px;
+}
+
+.setting-item {
+  margin-bottom: 20px;
+}
+
+.setting-item label {
+  display: block;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.setting-item input,
+.setting-item textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #ffffff;
+  font-size: 14px;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.setting-item input:focus,
+.setting-item textarea:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+}
+
+.setting-item input:disabled,
+.setting-item textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.setting-item textarea {
+  resize: vertical;
+  min-height: 120px;
+  line-height: 1.5;
+}
+
+.setting-hint {
+  display: block;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 6px;
+}
+
+.setting-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.btn-reset {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.7);
+  padding: 10px 20px;
+}
+
+.btn-reset:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.btn-reset:disabled {
+  opacity: 0.4;
 }
 
 @keyframes pulse {
